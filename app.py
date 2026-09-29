@@ -298,7 +298,7 @@ def build_demandas_finalizadas_layout():
             html.Div([
                 html.I(className="fa-solid fa-box-archive fa-xl me-3 text-success"),
                 html.Div([
-                    html.Strong("Demandas finalizadas — épico REGRA-305: ", className="d-block mb-1"),
+                    html.Strong("Demandas finalizadas — Épico REGRA-305: ", className="d-block mb-1"),
                     html.Span(
                         "Acompanhamento dos Registros de Demanda agrupados em “Outras Demandas Finalizadas”, "
                         "incluindo itens Finalizados, Resolvidos, Resolvidos com ressalvas e Cancelados."
