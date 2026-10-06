@@ -10,18 +10,29 @@ Módulos:
 
 import sys
 import threading
+from pathlib import Path
 import duckdb
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from dash import Dash, html, dcc, dash_table, Input, Output, State, ctx, no_update
+from dash import Dash, html, dcc, dash_table, Input, Output, State, ctx, no_update, ALL
 import dash_bootstrap_components as dbc
 from etl import run_etl
+
+
+def localized_dropdown(*args, **kwargs):
+    """Usa rótulos de busca em português em todos os dropdowns do painel."""
+    labels = {"search": "Procurar"}
+    labels.update(kwargs.pop("labels", {}) or {})
+    return dcc.Dropdown(*args, labels=labels, **kwargs)
 
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-DUCKDB_PATH = "jira.duckdb"
+APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+DUCKDB_PATH = str(APP_DIR / "jira.duckdb")
+ASSETS_DIR = RESOURCE_DIR / "assets"
 DEMANDAS_FINALIZADAS_PARENT_KEY = "REGRA-305"
 
 SYNC_STATE_LOCK = threading.Lock()
@@ -36,11 +47,12 @@ SYNC_STATE = {
 # Inicializa aplicação Dash com tema corporativo Flatly
 app = Dash(
     __name__,
+    assets_folder=str(ASSETS_DIR),
     external_stylesheets=[
         dbc.themes.FLATLY,
         "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
     ],
-    title="CCEE | Jira Analytics",
+    title="GRPC | Dashboard das Demandas de Regras - Jira",
     suppress_callback_exceptions=True
 )
 
@@ -60,6 +72,82 @@ def get_data():
         
     con.close()
     return df, sync_str
+
+
+def build_issue_search_options(df, key_column="chave", summary_column="resumo"):
+    """Cria sugestões pesquisáveis com a chave Jira e o resumo do item."""
+    if key_column not in df.columns or summary_column not in df.columns:
+        return []
+    options_df = df[[key_column, summary_column]].dropna(subset=[key_column]).drop_duplicates(key_column)
+    options = []
+    for row in options_df.to_dict("records"):
+        key = str(row[key_column]).strip()
+        summary_value = row.get(summary_column)
+        summary = "" if pd.isna(summary_value) else str(summary_value).strip()
+        options.append({"label": f"{key} — {summary}" if summary else key, "value": key})
+    return options
+
+
+def get_latest_jira_comment():
+    """Retorna o comentário mais recente se os campos estiverem no feed do Jira."""
+    con = duckdb.connect(DUCKDB_PATH, read_only=True)
+    try:
+        columns = {
+            row[0].lower(): row[0]
+            for row in con.execute("DESCRIBE issues").fetchall()
+        }
+        body_col = next(
+            (columns[name] for name in ("comment", "comment_body", "comment_text") if name in columns),
+            None
+        )
+        author_col = next(
+            (columns[name] for name in ("comment_author", "comment_author_name") if name in columns),
+            None
+        )
+        date_col = next(
+            (columns[name] for name in ("comment_updated", "comment_created") if name in columns),
+            None
+        )
+        if not body_col or not author_col:
+            return None
+
+        quote = lambda name: '"' + name.replace('"', '""') + '"'
+        order_by = f"TRY_CAST({quote(date_col)} AS TIMESTAMP) DESC NULLS LAST" if date_col else "1"
+        result = con.execute(
+            f"""
+            SELECT {quote(author_col)}, {quote(body_col)}
+            FROM issues
+            WHERE NULLIF(TRIM(CAST({quote(body_col)} AS VARCHAR)), '') IS NOT NULL
+            ORDER BY {order_by}
+            LIMIT 1
+            """
+        ).fetchone()
+        if not result:
+            return None
+        return {"author": str(result[0] or "Autor não informado"), "body": str(result[1])}
+    finally:
+        con.close()
+
+
+def build_latest_comment_card():
+    comment = get_latest_jira_comment()
+    if comment:
+        content = [
+            html.Div(comment["author"], className="fw-bold text-dark mb-1"),
+            html.Div(comment["body"], style={"whiteSpace": "pre-wrap", "overflowWrap": "anywhere"})
+        ]
+    else:
+        content = html.Span(
+            "Os campos de comentário ainda não estão disponíveis. Habilite Comment Author, Comment Body e Comment Created/Updated na seção Comments do conector Appfire.",
+            className="text-muted"
+        )
+    return dbc.Card([
+        dbc.CardHeader([
+            html.I(className="fa-regular fa-comment-dots text-primary me-2"),
+            html.Span("Último comentário do Jira", className="fw-bold")
+        ], className="bg-transparent border-0 pb-0"),
+        dbc.CardBody(content, className="pt-2")
+    ], className="shadow-sm border-0 rounded-4 mb-4")
 
 
 def get_cadernos_data():
@@ -286,7 +374,7 @@ def build_kpi_card(title, value, subtitle, icon, color):
                 ], width=3, className="d-flex justify-content-end align-items-center")
             ])
         ]),
-        className="shadow-sm border-0 mb-3 h-100",
+        className="shadow-sm border-0 h-100 kpi-card",
         style={"borderRadius": "12px", "borderTop": f"4px solid var(--bs-{color})"}
     )
 
@@ -315,7 +403,7 @@ def build_demandas_finalizadas_layout():
                             [html.I(className="fa-solid fa-circle-check me-1 text-success"), "Resolução:"],
                             className="fw-semibold text-muted small mb-1"
                         ),
-                        dcc.Dropdown(
+                        localized_dropdown(
                             id="dem-filter-resolucao",
                             placeholder="Todas as resoluções",
                             multi=True,
@@ -327,7 +415,7 @@ def build_demandas_finalizadas_layout():
                             [html.I(className="fa-solid fa-flag me-1 text-warning"), "Prioridade:"],
                             className="fw-semibold text-muted small mb-1"
                         ),
-                        dcc.Dropdown(
+                        localized_dropdown(
                             id="dem-filter-prioridade",
                             placeholder="Todas as prioridades",
                             multi=True,
@@ -339,7 +427,7 @@ def build_demandas_finalizadas_layout():
                             [html.I(className="fa-solid fa-user me-1 text-primary"), "Relator:"],
                             className="fw-semibold text-muted small mb-1"
                         ),
-                        dcc.Dropdown(
+                        localized_dropdown(
                             id="dem-filter-relator",
                             placeholder="Todos os relatores",
                             multi=True,
@@ -432,9 +520,16 @@ def build_demandas_finalizadas_layout():
                 className="bg-transparent border-0 pt-3 px-3"
             ),
             dbc.CardBody([
+                localized_dropdown(
+                    id="dem-search-resumo",
+                    options=[],
+                    placeholder="Buscar demanda por chave ou resumo...",
+                    clearable=True,
+                    className="mb-3"
+                ),
                 dash_table.DataTable(
                     id="dem-tabela",
-                    page_size=14,
+                    page_size=6,
                     sort_action="native",
                     filter_action="native",
                     style_as_list_view=True,
@@ -471,14 +566,14 @@ def build_demandas_finalizadas_layout():
                 className="bg-transparent border-0 pt-3 px-3"
             ),
             dbc.CardBody([
-                dcc.Dropdown(
+                localized_dropdown(
                     id="dem-select-drilldown",
                     placeholder="Selecione uma demanda para visualizar suas subtarefas...",
                     className="shadow-none mb-3"
                 ),
                 dash_table.DataTable(
                     id="dem-drilldown-tabela",
-                    page_size=10,
+                    page_size=6,
                     sort_action="native",
                     filter_action="native",
                     style_as_list_view=True,
@@ -505,7 +600,9 @@ def build_demandas_finalizadas_layout():
 
 # Layout Principal com Abas
 app.layout = html.Div(
-    style={"backgroundColor": COLORS["bg"], "minHeight": "100vh"},
+    id="app-shell",
+    className="theme-light",
+    style={"height": "100vh", "minHeight": 0, "overflow": "hidden", "display": "flex", "flexDirection": "column"},
     children=[
         # Barra de Navegação Superior (Header)
         dbc.Navbar(
@@ -514,8 +611,8 @@ app.layout = html.Div(
                     dbc.Col(
                         html.Div([
                             html.I(className="fa-solid fa-chart-line fa-xl text-primary me-2"),
-                            html.Span("CCEE", className="fw-bold fs-4 text-primary me-2"),
-                            html.Span("| Painel Analítico Jira", className="fs-5 text-dark fw-semibold")
+                            html.Span("GRPC", className="fw-bold fs-4 text-primary me-2"),
+                            html.Span("| Dashboard das Demandas de Regras", className="fs-5 text-dark fw-semibold")
                         ], className="d-flex align-items-center"),
                         width="auto"
                     ),
@@ -525,7 +622,7 @@ app.layout = html.Div(
                         html.Div([
                             html.Span(id="sync-badge", className="badge bg-light text-dark border me-3 py-2 px-3", style={"fontSize": "0.85rem"}),
                             dbc.Button(
-                                [html.I(className="fa-solid fa-arrows-rotate me-2"), "Atualizar Jira"],
+                                [html.I(className="fa-solid fa-arrows-rotate me-2"), "Atualizar"],
                                 id="btn-sync",
                                 color="primary",
                                 size="sm",
@@ -537,7 +634,7 @@ app.layout = html.Div(
                 ], align="center")
             ], fluid=True, className="px-4"),
             color="white",
-            className="shadow-sm py-3 border-bottom mb-4 sticky-top"
+            className="shadow-sm py-3 border-bottom sticky-top flex-shrink-0"
         ),
 
         # Loading da Sincronização
@@ -548,32 +645,148 @@ app.layout = html.Div(
             children=html.Div(id="sync-output", className="px-4")
         ),
 
-        # Container Central com Abas
-        dbc.Container([
-            dbc.Tabs([
-                dbc.Tab(label="📘 Cadernos e Versões (2026/2027)", tab_id="tab-cadernos", label_class_name="fw-bold fs-6 py-2 px-4 text-primary"),
-                dbc.Tab(label="✅ Demandas Finalizadas", tab_id="tab-demandas", label_class_name="fw-bold fs-6 py-2 px-4 text-success"),
-                dbc.Tab(label="🔍 Consultas Técnicas", tab_id="tab-consultas", label_class_name="fw-bold fs-6 py-2 px-4"),
-                dbc.Tab(label="📊 Visão Geral das Demandas", tab_id="tab-geral", label_class_name="fw-bold fs-6 py-2 px-4")
-            ], id="main-tabs", active_tab="tab-cadernos", className="mb-4 border-bottom"),
-
-            # Conteúdo das Abas
-            html.Div(id="tab-content")
-        ], fluid=True, className="px-4"),
+        # Navegação lateral e área de conteúdo
+        html.Div([
+            html.Aside([
+                dbc.Button(
+                    html.I(className="fa-solid fa-angles-left"),
+                    id="sidebar-toggle",
+                    color="link",
+                    className="sidebar-toggle",
+                    title="Recolher navegação"
+                ),
+                dbc.Tabs([
+                    dbc.Tab(label="Cadernos e Versões", tab_id="tab-cadernos"),
+                    dbc.Tab(label="Demandas Finalizadas", tab_id="tab-demandas"),
+                    dbc.Tab(label="Consultas Técnicas", tab_id="tab-consultas"),
+                    dbc.Tab(label="Visão Geral", tab_id="tab-geral")
+                ], id="main-tabs", active_tab="tab-cadernos", className="sidebar-main-tabs"),
+                html.Div(className="sidebar-divider"),
+                dbc.Tabs(id="section-tabs", className="sidebar-section-tabs"),
+                html.Div(className="sidebar-spacer"),
+                dbc.Button(
+                    [html.I(className="fa-solid fa-moon sidebar-icon"), html.Span("Modo escuro", className="sidebar-label")],
+                    id="dark-mode-toggle",
+                    color="link",
+                    className="sidebar-theme-toggle"
+                )
+            ], id="sidebar", className="sidebar sidebar-expanded"),
+            html.Main(id="section-content", className="section-content")
+        ], className="app-body"),
 
         # Armazenamento de disparo de carga
         dcc.Store(id="store-data-trigger"),
+        dcc.Store(id="theme-store", storage_type="local", data="light"),
         dcc.Interval(id="sync-progress-interval", interval=1000, disabled=True, n_intervals=0)
     ]
 )
 
 
-# Callback para renderizar o layout da aba selecionada
+# O tema escolhido fica salvo no navegador e é reaplicado ao abrir o painel.
 @app.callback(
-    Output("tab-content", "children"),
+    Output("theme-store", "data"),
+    Input("dark-mode-toggle", "n_clicks"),
+    State("theme-store", "data"),
+    prevent_initial_call=True
+)
+def toggle_theme(_, current_theme):
+    return "dark" if current_theme != "dark" else "light"
+
+
+@app.callback(
+    [Output("app-shell", "className"), Output("dark-mode-toggle", "children")],
+    Input("theme-store", "data")
+)
+def apply_theme(theme):
+    if theme == "dark":
+        return "theme-dark", [html.I(className="fa-solid fa-sun sidebar-icon"), html.Span("Modo claro", className="sidebar-label")]
+    return "theme-light", [html.I(className="fa-solid fa-moon sidebar-icon"), html.Span("Modo escuro", className="sidebar-label")]
+
+
+@app.callback(
+    [Output("sidebar", "className"), Output("sidebar-toggle", "title")],
+    Input("sidebar-toggle", "n_clicks"),
+    State("sidebar", "className"),
+    prevent_initial_call=True
+)
+def toggle_sidebar(_, current_class):
+    collapsed = "sidebar-collapsed" in (current_class or "")
+    if collapsed:
+        return "sidebar sidebar-expanded", "Recolher navegação"
+    return "sidebar sidebar-collapsed", "Expandir navegação"
+
+
+# Callback para renderizar o layout da aba selecionada
+SECTION_TITLES = {
+    "tab-cadernos": ["Filtros e indicadores", "Avanço por caderno", "Escopo e status", "Cadernos", "Detalhamento"],
+    "tab-demandas": ["Filtros e indicadores", "Status e resolução", "Evolução e relatores", "Demandas", "Detalhamento"],
+    "tab-consultas": ["Filtros e indicadores", "SLA, temas e aging", "Lead time e fluxo", "Demandas"],
+    "tab-geral": ["Filtros e indicadores", "Tipos e prioridades", "Resolução e evolução", "Demandas"]
+}
+SECTION_GROUPS = {
+    "tab-cadernos": [[0, 1, 2], [3], [4], [5], [6]],
+    "tab-demandas": [[0, 1, 2], [3], [4], [5], [6]],
+    "tab-consultas": [[0, 1, 2], [3], [4], [5]],
+    "tab-geral": [[0, 1], [2], [3], [4]]
+}
+
+
+def get_layout_sections(active_tab, layout):
+    children = layout.children if isinstance(layout, html.Div) else [layout]
+    groups = SECTION_GROUPS.get(active_tab)
+    if not groups:
+        groups = [[index] for index in range(len(children))]
+    return [[children[index] for index in group if index < len(children)] for group in groups]
+
+
+@app.callback(
+    [
+        Output("section-tabs", "children"),
+        Output("section-tabs", "active_tab"),
+        Output("section-content", "children")
+    ],
     Input("main-tabs", "active_tab")
 )
-def render_tab_content(active_tab):
+def update_section_navigation(active_tab):
+    layout = _build_tab_layout(active_tab)
+    sections = get_layout_sections(active_tab, layout)
+    titles = SECTION_TITLES.get(active_tab, SECTION_TITLES["tab-geral"])
+    tabs = [
+        dbc.Tab(
+            label=titles[index] if index < len(titles) else f"Seção {index + 1}",
+            tab_id=f"section-{index}",
+            label_class_name="fw-semibold"
+        )
+        for index in range(len(sections))
+    ]
+    pages = [
+        html.Div(
+            content,
+            id={"type": "section-page", "index": index},
+            className="section-page is-active" if index == 0 else "section-page is-preloaded"
+        )
+        for index, content in enumerate(sections)
+    ]
+    return tabs, "section-0", pages
+
+
+@app.callback(
+    Output({"type": "section-page", "index": ALL}, "className"),
+    Input("section-tabs", "active_tab"),
+    State({"type": "section-page", "index": ALL}, "id")
+)
+def render_tab_content(active_section, page_ids):
+    page_count = len(page_ids or [])
+    index = int(active_section.split("-")[-1]) if active_section and active_section.startswith("section-") else 0
+    if index >= page_count:
+        index = 0
+    return [
+        "section-page is-active" if page_index == index else "section-page is-preloaded"
+        for page_index in range(page_count)
+    ]
+
+
+def _build_tab_layout(active_tab):
     if active_tab == "tab-cadernos":
         # Layout da Aba 3: Cadernos e Versões
         return html.Div([
@@ -594,7 +807,7 @@ def render_tab_content(active_tab):
                     dbc.Row([
                         dbc.Col([
                             html.Label([html.I(className="fa-solid fa-code-branch me-1 text-primary"), "Versão Regulatória:"], className="fw-semibold text-muted small mb-1"),
-                            dcc.Dropdown(
+                            localized_dropdown(
                                 id="cad-filter-versao",
                                 options=[
                                     {"label": "Todas as Versões", "value": "Todos"},
@@ -609,7 +822,7 @@ def render_tab_content(active_tab):
                         ], md=4, sm=12, className="mb-2 mb-md-0"),
                         dbc.Col([
                             html.Label([html.I(className="fa-solid fa-circle-check me-1 text-success"), "Status do Caderno:"], className="fw-semibold text-muted small mb-1"),
-                            dcc.Dropdown(
+                            localized_dropdown(
                                 id="cad-filter-status",
                                 placeholder="Todos os status",
                                 multi=True,
@@ -618,7 +831,7 @@ def render_tab_content(active_tab):
                         ], md=4, sm=12, className="mb-2 mb-md-0"),
                         dbc.Col([
                             html.Label([html.I(className="fa-solid fa-layer-group me-1 text-info"), "Tipo de Item Pai:"], className="fw-semibold text-muted small mb-1"),
-                            dcc.Dropdown(
+                            localized_dropdown(
                                 id="cad-filter-tipo",
                                 placeholder="Todos os tipos",
                                 multi=True,
@@ -631,7 +844,7 @@ def render_tab_content(active_tab):
             ),
 
             # Linha de KPIs de Cadernos
-            dbc.Row(id="cad-kpis-row", className="mb-4 g-3"),
+            dbc.Row(id="cad-kpis-row", className="mb-4 g-3 cad-kpis-row"),
 
             # Linha 1 de Gráficos (Termômetro por Caderno & Comparativo Versões)
             dbc.Row([
@@ -719,9 +932,16 @@ def render_tab_content(active_tab):
                             className="bg-transparent border-0 pt-3 px-3"
                         ),
                         dbc.CardBody([
+                            localized_dropdown(
+                                id="cad-search-caderno",
+                                options=[],
+                                placeholder="Buscar caderno por chave ou nome...",
+                                clearable=True,
+                                className="mb-3"
+                            ),
                             dash_table.DataTable(
                                 id="cad-tabela",
-                                page_size=10,
+                                page_size=6,
                                 sort_action="native",
                                 filter_action="native",
                                 style_as_list_view=True,
@@ -777,7 +997,7 @@ def render_tab_content(active_tab):
                         dbc.CardBody([
                             dbc.Row([
                                 dbc.Col([
-                                    dcc.Dropdown(
+                                    localized_dropdown(
                                         id="cad-select-drilldown",
                                         placeholder="Clique para selecionar ou buscar um Caderno / Épico...",
                                         className="shadow-none mb-3"
@@ -786,7 +1006,7 @@ def render_tab_content(active_tab):
                             ]),
                             dash_table.DataTable(
                                 id="cad-drilldown-tabela",
-                                page_size=8,
+                                page_size=6,
                                 sort_action="native",
                                 filter_action="native",
                                 style_as_list_view=True,
@@ -846,7 +1066,7 @@ def render_tab_content(active_tab):
                     dbc.Row([
                         dbc.Col([
                             html.Label([html.I(className="fa-solid fa-circle-check me-1 text-success"), "Situação:"], className="fw-semibold text-muted small mb-1"),
-                            dcc.Dropdown(
+                            localized_dropdown(
                                 id="ct-filter-situacao",
                                 options=[
                                     {"label": "Todas as Situações", "value": "Todos"},
@@ -860,7 +1080,7 @@ def render_tab_content(active_tab):
                         ], md=4, sm=6, xs=12, className="mb-2 mb-md-0"),
                         dbc.Col([
                             html.Label([html.I(className="fa-solid fa-hourglass-half me-1 text-warning"), "Faixa de Aging (Dias em Aberto):"], className="fw-semibold text-muted small mb-1"),
-                            dcc.Dropdown(
+                            localized_dropdown(
                                 id="ct-filter-aging",
                                 options=[
                                     {"label": "Todas as Faixas", "value": "Todos"},
@@ -876,7 +1096,7 @@ def render_tab_content(active_tab):
                         ], md=4, sm=6, xs=12, className="mb-2 mb-md-0"),
                         dbc.Col([
                             html.Label([html.I(className="fa-solid fa-user me-1 text-primary"), "Demandante / Relator:"], className="fw-semibold text-muted small mb-1"),
-                            dcc.Dropdown(
+                            localized_dropdown(
                                 id="ct-filter-relator",
                                 placeholder="Todos os solicitantes",
                                 multi=True,
@@ -887,7 +1107,7 @@ def render_tab_content(active_tab):
                     dbc.Row([
                         dbc.Col([
                             html.Label([html.I(className="fa-solid fa-bullseye me-1 text-danger"), "Meta de SLA (Prazo em Dias):"], className="fw-semibold text-muted small mb-1"),
-                            dcc.Dropdown(
+                            localized_dropdown(
                                 id="ct-filter-meta-sla",
                                 options=[
                                     {"label": "3 dias (Exigente)", "value": 3},
@@ -904,7 +1124,7 @@ def render_tab_content(active_tab):
                         ], md=4, sm=6, xs=12, className="mb-2 mb-md-0"),
                         dbc.Col([
                             html.Label([html.I(className="fa-solid fa-traffic-light me-1 text-info"), "Conformidade de SLA:"], className="fw-semibold text-muted small mb-1"),
-                            dcc.Dropdown(
+                            localized_dropdown(
                                 id="ct-filter-status-sla",
                                 options=[
                                     {"label": "Todos os Status de SLA", "value": "Todos"},
@@ -918,7 +1138,7 @@ def render_tab_content(active_tab):
                         ], md=4, sm=6, xs=12, className="mb-2 mb-md-0"),
                         dbc.Col([
                             html.Label([html.I(className="fa-solid fa-tags me-1 text-secondary"), "Tema / Regra Regulatória:"], className="fw-semibold text-muted small mb-1"),
-                            dcc.Dropdown(
+                            localized_dropdown(
                                 id="ct-filter-tema",
                                 placeholder="Todos os temas regulatórios",
                                 clearable=True,
@@ -1045,9 +1265,16 @@ def render_tab_content(active_tab):
                             className="bg-transparent border-0 pt-3 px-3"
                         ),
                         dbc.CardBody([
+                            localized_dropdown(
+                                id="ct-search-consulta",
+                                options=[],
+                                placeholder="Buscar consulta por chave ou resumo...",
+                                clearable=True,
+                                className="mb-3"
+                            ),
                             dash_table.DataTable(
                                 id="ct-tabela-demandas",
-                                page_size=10,
+                                page_size=6,
                                 sort_action="native",
                                 filter_action="native",
                                 style_as_list_view=True,
@@ -1124,7 +1351,7 @@ def render_tab_content(active_tab):
                 dbc.Row([
                     dbc.Col([
                         html.Label([html.I(className="fa-solid fa-filter me-1 text-primary"), "Tipo de Item:"], className="fw-semibold text-muted small mb-1"),
-                        dcc.Dropdown(
+                        localized_dropdown(
                             id="filter-tipo",
                             placeholder="Todos os tipos",
                             multi=True,
@@ -1133,7 +1360,7 @@ def render_tab_content(active_tab):
                     ], md=4, sm=12, className="mb-2 mb-md-0"),
                     dbc.Col([
                         html.Label([html.I(className="fa-solid fa-flag me-1 text-warning"), "Prioridade:"], className="fw-semibold text-muted small mb-1"),
-                        dcc.Dropdown(
+                        localized_dropdown(
                             id="filter-prioridade",
                             placeholder="Todas as prioridades",
                             multi=True,
@@ -1142,7 +1369,7 @@ def render_tab_content(active_tab):
                     ], md=4, sm=12, className="mb-2 mb-md-0"),
                     dbc.Col([
                         html.Label([html.I(className="fa-solid fa-circle-check me-1 text-success"), "Situação:"], className="fw-semibold text-muted small mb-1"),
-                        dcc.Dropdown(
+                        localized_dropdown(
                             id="filter-situacao",
                             options=[
                                 {"label": "Todos", "value": "Todos"},
@@ -1261,9 +1488,16 @@ def render_tab_content(active_tab):
                         className="bg-transparent border-0 pt-3 px-3"
                     ),
                     dbc.CardBody([
+                        localized_dropdown(
+                            id="geral-search-resumo",
+                            options=[],
+                            placeholder="Buscar demanda por chave ou resumo...",
+                            clearable=True,
+                            className="mb-3"
+                        ),
                         dash_table.DataTable(
                             id="tabela-demandas",
-                            page_size=10,
+                            page_size=6,
                             sort_action="native",
                             filter_action="native",
                             style_as_list_view=True,
@@ -1308,7 +1542,12 @@ def render_tab_content(active_tab):
 
 # Callback para opções de filtros gerais e badge
 @app.callback(
-    [Output("filter-tipo", "options"), Output("filter-prioridade", "options"), Output("sync-badge", "children")],
+    [
+        Output("filter-tipo", "options"),
+        Output("filter-prioridade", "options"),
+        Output("sync-badge", "children"),
+        Output("geral-search-resumo", "options")
+    ],
     [Input("store-data-trigger", "data")],
     prevent_initial_call=False
 )
@@ -1321,20 +1560,21 @@ def populate_general_dropdowns(_):
     prioridade_opts = [{"label": p, "value": p} for p in prioridades]
     badge_text = f"Última Carga: {sync_time} ({len(df)} itens)"
     
-    return tipo_opts, prioridade_opts, badge_text
+    return tipo_opts, prioridade_opts, badge_text, build_issue_search_options(df)
 
 
 # Callback para opções dos filtros de Consulta Técnica
 @app.callback(
     [
         Output("ct-filter-relator", "options"),
-        Output("ct-filter-tema", "options")
+        Output("ct-filter-tema", "options"),
+        Output("ct-search-consulta", "options")
     ],
     [Input("main-tabs", "active_tab"), Input("store-data-trigger", "data")]
 )
 def populate_ct_dropdowns(active_tab, _):
     if active_tab != "tab-consultas":
-        return [], []
+        return [], [], []
     df, _ = get_data()
     df_ct = df[df["tipo_de_item"].str.contains("Consulta", case=False, na=False)]
     relatores = sorted([r for r in df_ct["relator"].dropna().unique() if r != "Não Informado"])
@@ -1349,7 +1589,8 @@ def populate_ct_dropdowns(active_tab, _):
 
     return (
         [{"label": r, "value": r} for r in relatores],
-        [{"label": t, "value": t} for t in temas]
+        [{"label": t, "value": t} for t in temas],
+        build_issue_search_options(df_ct)
     )
 
 
@@ -1359,13 +1600,14 @@ def populate_ct_dropdowns(active_tab, _):
         Output("dem-filter-resolucao", "options"),
         Output("dem-filter-prioridade", "options"),
         Output("dem-filter-relator", "options"),
-        Output("dem-select-drilldown", "options")
+        Output("dem-select-drilldown", "options"),
+        Output("dem-search-resumo", "options")
     ],
     [Input("main-tabs", "active_tab"), Input("store-data-trigger", "data")]
 )
 def populate_demandas_dropdowns(active_tab, _):
     if active_tab != "tab-demandas":
-        return [], [], [], []
+        return [], [], [], [], []
 
     df = get_demandas_finalizadas_data()
     resolucoes = sorted(df["resolucao"].dropna().unique())
@@ -1377,18 +1619,24 @@ def populate_demandas_dropdowns(active_tab, _):
         [{"label": value, "value": value} for value in resolucoes],
         [{"label": value, "value": value} for value in prioridades],
         [{"label": value, "value": value} for value in relatores],
-        [{"label": f"{item['chave']} — {item['resumo']}", "value": item["chave"]} for item in demandas]
+        [{"label": f"{item['chave']} — {item['resumo']}", "value": item["chave"]} for item in demandas],
+        build_issue_search_options(df)
     )
 
 
 # Callback para opções dos filtros de Cadernos (Aba 3)
 @app.callback(
-    [Output("cad-filter-status", "options"), Output("cad-filter-tipo", "options"), Output("cad-select-drilldown", "options")],
+    [
+        Output("cad-filter-status", "options"),
+        Output("cad-filter-tipo", "options"),
+        Output("cad-select-drilldown", "options"),
+        Output("cad-search-caderno", "options")
+    ],
     [Input("main-tabs", "active_tab"), Input("store-data-trigger", "data")]
 )
 def populate_cadernos_dropdowns(active_tab, _):
     if active_tab != "tab-cadernos":
-        return [], [], []
+        return [], [], [], []
     df_cad = get_cadernos_data()
     status_list = sorted([s for s in df_cad["caderno_status"].dropna().unique()])
     tipo_list = sorted([t for t in df_cad["caderno_tipo"].dropna().unique()])
@@ -1397,8 +1645,9 @@ def populate_cadernos_dropdowns(active_tab, _):
     status_opts = [{"label": s, "value": s} for s in status_list]
     tipo_opts = [{"label": t, "value": t} for t in tipo_list]
     drilldown_opts = [{"label": c, "value": c} for c in cadernos_list]
+    search_opts = build_issue_search_options(df_cad, "caderno_chave", "caderno_nome")
     
-    return status_opts, tipo_opts, drilldown_opts
+    return status_opts, tipo_opts, drilldown_opts, search_opts
 
 
 # Callback para sincronização do Jira
@@ -1446,10 +1695,11 @@ def sync_data(n_clicks, n_intervals):
         Input("cad-filter-versao", "value"),
         Input("cad-filter-status", "value"),
         Input("cad-filter-tipo", "value"),
+        Input("cad-search-caderno", "value"),
         Input("store-data-trigger", "data")
     ]
 )
-def update_cadernos(versao_sel, status_sel, tipo_sel, _):
+def update_cadernos(versao_sel, status_sel, tipo_sel, caderno_key, _):
     df_cad = get_cadernos_data()
     dff = df_cad.copy()
 
@@ -1459,6 +1709,8 @@ def update_cadernos(versao_sel, status_sel, tipo_sel, _):
         dff = dff[dff["caderno_status"].isin(status_sel)]
     if tipo_sel:
         dff = dff[dff["caderno_tipo"].isin(tipo_sel)]
+    if caderno_key:
+        dff = dff[dff["caderno_chave"].astype(str) == str(caderno_key)]
 
     total_cadernos = len(dff)
     total_demandas = dff["total_demandas"].sum()
@@ -1649,10 +1901,15 @@ def update_caderno_drilldown(caderno_sel, _):
 @app.callback(
     Output("cad-download-dataframe-csv", "data"),
     Input("btn-cad-download-csv", "n_clicks"),
-    [State("cad-filter-versao", "value"), State("cad-filter-status", "value"), State("cad-filter-tipo", "value")],
+    [
+        State("cad-filter-versao", "value"),
+        State("cad-filter-status", "value"),
+        State("cad-filter-tipo", "value"),
+        State("cad-search-caderno", "value")
+    ],
     prevent_initial_call=True
 )
-def download_cadernos_csv(n_clicks, versao_sel, status_sel, tipo_sel):
+def download_cadernos_csv(n_clicks, versao_sel, status_sel, tipo_sel, caderno_key):
     df_cad = get_cadernos_data()
     dff = df_cad.copy()
     if versao_sel and versao_sel != "Todos":
@@ -1661,6 +1918,8 @@ def download_cadernos_csv(n_clicks, versao_sel, status_sel, tipo_sel):
         dff = dff[dff["caderno_status"].isin(status_sel)]
     if tipo_sel:
         dff = dff[dff["caderno_tipo"].isin(tipo_sel)]
+    if caderno_key:
+        dff = dff[dff["caderno_chave"].astype(str) == str(caderno_key)]
     return dcc.send_data_frame(dff.to_csv, "cadernos_e_versoes_ccee.csv", index=False)
 
 
@@ -1691,12 +1950,15 @@ def filter_demandas_finalizadas(df, resolucao_sel=None, prioridade_sel=None, rel
         Input("dem-filter-resolucao", "value"),
         Input("dem-filter-prioridade", "value"),
         Input("dem-filter-relator", "value"),
+        Input("dem-search-resumo", "value"),
         Input("store-data-trigger", "data")
     ]
 )
-def update_demandas_finalizadas(resolucao_sel, prioridade_sel, relator_sel, _):
+def update_demandas_finalizadas(resolucao_sel, prioridade_sel, relator_sel, demanda_key, _):
     df = get_demandas_finalizadas_data()
     dff = filter_demandas_finalizadas(df, resolucao_sel, prioridade_sel, relator_sel)
+    if demanda_key:
+        dff = dff[dff["chave"].astype(str) == str(demanda_key)]
 
     total = len(dff)
     finalizadas = int((dff["resolucao"] == "Finalizado").sum())
@@ -1857,13 +2119,16 @@ def update_demanda_drilldown(demanda_key, _):
     [
         State("dem-filter-resolucao", "value"),
         State("dem-filter-prioridade", "value"),
-        State("dem-filter-relator", "value")
+        State("dem-filter-relator", "value"),
+        State("dem-search-resumo", "value")
     ],
     prevent_initial_call=True
 )
-def download_demandas_finalizadas(n_clicks, resolucao_sel, prioridade_sel, relator_sel):
+def download_demandas_finalizadas(n_clicks, resolucao_sel, prioridade_sel, relator_sel, demanda_key):
     df = get_demandas_finalizadas_data()
     dff = filter_demandas_finalizadas(df, resolucao_sel, prioridade_sel, relator_sel)
+    if demanda_key:
+        dff = dff[dff["chave"].astype(str) == str(demanda_key)]
     return dcc.send_data_frame(dff.to_csv, "demandas_finalizadas_regra_305.csv", index=False)
 
 
@@ -1887,10 +2152,11 @@ def download_demandas_finalizadas(n_clicks, resolucao_sel, prioridade_sel, relat
         Input("ct-filter-meta-sla", "value"),
         Input("ct-filter-status-sla", "value"),
         Input("ct-filter-tema", "value"),
+        Input("ct-search-consulta", "value"),
         Input("store-data-trigger", "data")
     ]
 )
-def update_consultas_tecnicas(situacao_sel, aging_sel, relator_sel, meta_sla_sel, status_sla_sel, tema_sel, _):
+def update_consultas_tecnicas(situacao_sel, aging_sel, relator_sel, meta_sla_sel, status_sla_sel, tema_sel, consulta_key, _):
     df, _ = get_data()
     # Filtra estritamente por Consulta Técnica
     dff = df[df["tipo_de_item"].str.contains("Consulta", case=False, na=False)].copy()
@@ -1925,6 +2191,8 @@ def update_consultas_tecnicas(situacao_sel, aging_sel, relator_sel, meta_sla_sel
         dff = dff[dff["status_sla_simples"] == status_sla_sel]
     if tema_sel:
         dff = dff[dff["categorias"].str.contains(tema_sel, case=False, na=False)]
+    if consulta_key:
+        dff = dff[dff["chave"].astype(str) == str(consulta_key)]
 
     total_ct = len(dff)
     df_done = dff[dff["situacao"] == "Concluído"]
@@ -2175,11 +2443,12 @@ def update_consultas_tecnicas(situacao_sel, aging_sel, relator_sel, meta_sla_sel
         State("ct-filter-relator", "value"),
         State("ct-filter-meta-sla", "value"),
         State("ct-filter-status-sla", "value"),
-        State("ct-filter-tema", "value")
+        State("ct-filter-tema", "value"),
+        State("ct-search-consulta", "value")
     ],
     prevent_initial_call=True
 )
-def download_ct_csv(n_clicks, situacao_sel, aging_sel, relator_sel, meta_sla_sel, status_sla_sel, tema_sel):
+def download_ct_csv(n_clicks, situacao_sel, aging_sel, relator_sel, meta_sla_sel, status_sla_sel, tema_sel, consulta_key):
     df, _ = get_data()
     dff = df[df["tipo_de_item"].str.contains("Consulta", case=False, na=False)].copy()
     meta_sla = int(meta_sla_sel) if meta_sla_sel else 5
@@ -2211,6 +2480,8 @@ def download_ct_csv(n_clicks, situacao_sel, aging_sel, relator_sel, meta_sla_sel
         dff = dff[dff["status_sla_simples"] == status_sla_sel]
     if tema_sel:
         dff = dff[dff["categorias"].str.contains(tema_sel, case=False, na=False)]
+    if consulta_key:
+        dff = dff[dff["chave"].astype(str) == str(consulta_key)]
 
     cols_export = [
         "chave", "resumo", "situacao", "status_sla", "meta_sla_dias",
@@ -2237,10 +2508,11 @@ def download_ct_csv(n_clicks, situacao_sel, aging_sel, relator_sel, meta_sla_sel
         Input("filter-tipo", "value"),
         Input("filter-prioridade", "value"),
         Input("filter-situacao", "value"),
+        Input("geral-search-resumo", "value"),
         Input("store-data-trigger", "data")
     ]
 )
-def update_geral(tipo_sel, prioridade_sel, situacao_sel, _):
+def update_geral(tipo_sel, prioridade_sel, situacao_sel, demanda_key, _):
     df, _ = get_data()
     dff = df.copy()
     if tipo_sel:
@@ -2249,6 +2521,8 @@ def update_geral(tipo_sel, prioridade_sel, situacao_sel, _):
         dff = dff[dff["prioridade"].isin(prioridade_sel)]
     if situacao_sel and situacao_sel != "Todos":
         dff = dff[dff["situacao"] == situacao_sel]
+    if demanda_key:
+        dff = dff[dff["chave"].astype(str) == str(demanda_key)]
 
     total = len(dff)
     abertos = len(dff[dff["situacao"] == "Em Aberto"])
@@ -2318,10 +2592,15 @@ def update_geral(tipo_sel, prioridade_sel, situacao_sel, _):
 @app.callback(
     Output("download-dataframe-csv", "data"),
     Input("btn-download-csv", "n_clicks"),
-    [State("filter-tipo", "value"), State("filter-prioridade", "value"), State("filter-situacao", "value")],
+    [
+        State("filter-tipo", "value"),
+        State("filter-prioridade", "value"),
+        State("filter-situacao", "value"),
+        State("geral-search-resumo", "value")
+    ],
     prevent_initial_call=True
 )
-def download_csv(n_clicks, tipo_sel, prioridade_sel, situacao_sel):
+def download_csv(n_clicks, tipo_sel, prioridade_sel, situacao_sel, demanda_key):
     df, _ = get_data()
     dff = df.copy()
     if tipo_sel:
@@ -2330,6 +2609,8 @@ def download_csv(n_clicks, tipo_sel, prioridade_sel, situacao_sel):
         dff = dff[dff["prioridade"].isin(prioridade_sel)]
     if situacao_sel and situacao_sel != "Todos":
         dff = dff[dff["situacao"] == situacao_sel]
+    if demanda_key:
+        dff = dff[dff["chave"].astype(str) == str(demanda_key)]
     return dcc.send_data_frame(dff.to_csv, "demandas_jira_filtradas.csv", index=False)
 
 

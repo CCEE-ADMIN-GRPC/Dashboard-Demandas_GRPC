@@ -1,0 +1,169 @@
+.theme-light {
+    background-color: #f8fafc;
+    color: #1e293b;
+    transition: background-color 180ms ease, color 180ms ease;
+}
+
+.theme-dark {
+    --dark-bg: #050505;
+    --dark-surface: #111111;
+    --dark-surface-raised: #1b1b1b;
+    --dark-border: #303030;
+    --dark-text: #ededed;
+    --dark-muted: #a3a3a3;
+    background-color: var(--dark-bg);
+    color: var(--dark-text);
+    transition: background-color 180ms ease, color 180ms ease;
+}
+
+.theme-dark .navbar,
+.theme-dark .modal-content,
+.theme-dark .card,
+.theme-dark .dropdown-menu,
+.theme-dark .list-group-item {
+    background-color: var(--dark-surface) !important;
+    color: var(--dark-surface) !important;
+    border-color: var(--dark-border) !important;
+}
+
+.theme-dark .card-header,
+.theme-dark .card-footer,
+.theme-dark .bg-light,
+.theme-dark .bg-white {
+    background-color: var(--dark-surface-raised) !important;
+    color: var(--dark-text) !important;
+}
+
+.theme-dark .text-dark,
+.theme-dark .text-body,
+.theme-dark .fw-bold,
+.theme-dark .fw-semibold,
+.theme-dark .nav-link {
+    color: var(--dark-text) !important;
+}
+
+/* Label dos inputs */
+.theme-dark label {
+color: var(--dark-surface) !important;
+
+}
+
+.theme-dark .text-muted,
+.theme-dark .form-text {
+    color: var(--dark-muted) !important;
+}
+
+.theme-dark .border,
+.theme-dark .border-bottom,
+.theme-dark hr {
+    border-color: var(--dark-border) !important;
+}
+
+.theme-dark .form-control,
+.theme-dark .form-select,
+.theme-dark .Select-control,
+.theme-dark .Select-menu-outer,
+.theme-dark .Select-option,
+.theme-dark .VirtualizedSelectOption,
+.theme-dark .VirtualizedSelectFocusedOption,
+.theme-dark .Select-value-label,
+.theme-dark .Select-placeholder,
+.theme-dark .Select-input > input {
+    background-color: #ffffff !important;
+    color: #111827 !important;
+    border-color: #94a3b8 !important;
+}
+
+.theme-dark .Select-option.is-focused,
+.theme-dark .Select-option.is-selected,
+.theme-dark .VirtualizedSelectFocusedOption,
+.theme-dark .dropdown-item:hover {
+    background-color: #e2e8f0 !important;
+    color: #111827 !important;
+}
+
+/* O dropdown atual usa opções próprias do Dash (não os antigos .Select-option). */
+.theme-dark .dash-dropdown-options-list-option,
+.theme-dark .dash-dropdown-options-list-option-text,
+.theme-dark .dash-dropdown-options-list-option-text * {
+    color: #111827 !important;
+}
+
+.theme-dark .dash-table-container .dash-spreadsheet-container,
+.theme-dark .dash-table-container .dash-spreadsheet-inner th,
+.theme-dark .dash-table-container .dash-spreadsheet-inner td {
+    background-color: var(--dark-surface) !important;
+    color: var(--dark-text) !important;
+    border-color: var(--dark-border) !important;
+}
+
+.theme-dark .dash-table-container .dash-spreadsheet-inner th {
+    background-color: var(--dark-surface-raised) !important;
+}
+
+.theme-dark .dash-table-container input {
+    color: var(--dark-text) !important;
+}
+
+.theme-dark .nav-tabs,
+.theme-dark .nav-tabs .nav-link,
+.theme-dark .nav-tabs .nav-link.active {
+    border-color: var(--dark-border) !important;
+}
+
+.theme-dark .nav-tabs {
+    background-color: var(--dark-bg);
+}
+
+.theme-dark #main-tabs,
+.theme-dark .section-tabs {
+    background-color: var(--dark-bg) !important;
+}
+
+.theme-dark .nav-tabs .nav-link {
+    background-color: var(--dark-surface);
+    color: var(--dark-text) !important;
+}
+
+.theme-dark .nav-tabs .nav-link.active {
+    background-color: var(--dark-surface-raised) !important;
+}
+
+.theme-dark .alert-light {
+    background-color: var(--dark-surface-raised) !important;
+    color: var(--dark-text) !important;
+    border-color: var(--dark-border) !important;
+}
+
+.theme-dark .js-plotly-plot .xtick text,
+.theme-dark .js-plotly-plot .ytick text,
+.theme-dark .js-plotly-plot .gtitle,
+.theme-dark .js-plotly-plot .legend text,
+.theme-dark .js-plotly-plot .annotation-text,
+.theme-dark .js-plotly-plot .g-xtitle,
+.theme-dark .js-plotly-plot .g-ytitle {
+    fill: #cbd5e1 !important;
+}
+
+.theme-dark .js-plotly-plot .gridlayer path,
+.theme-dark .js-plotly-plot .zerolinelayer path,
+.theme-dark .js-plotly-plot .xlines-below path,
+.theme-dark .js-plotly-plot .ylines-below path {
+    stroke: #424242 !important;
+}
+
+.theme-dark .js-plotly-plot,
+.theme-dark .js-plotly-plot .plot-container,
+.theme-dark .js-plotly-plot .svg-container,
+.theme-dark .js-plotly-plot .main-svg {
+    background: transparent !important;
+}
+
+.theme-dark .js-plotly-plot .bg {
+    fill: transparent !important;
+}
+
+.theme-dark .js-plotly-plot .slice,
+.theme-dark .js-plotly-plot .pielayer path {
+    stroke: #111111 !important;
+}

@@ -6,6 +6,7 @@ Extrai as coleções do conector Jira AIO e salva em banco local jira.duckdb.
 import sys
 import time
 import re
+from pathlib import Path
 import urllib3
 import requests
 import pandas as pd
@@ -18,7 +19,8 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 FEED_BASE_URL = "https://bi-reports.appfire.app/aio-app/rest/aio-cn/1.0/powerbi/export/NGI5NWQ0MDktOWVhMi00M2E5LWJiODctYWYxYjU5YWM5"
-DUCKDB_PATH = "jira.duckdb"
+APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+DUCKDB_PATH = str(APP_DIR / "jira.duckdb")
 
 ENTITIES = [
     "Issues",
